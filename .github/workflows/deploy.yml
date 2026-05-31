@@ -17,12 +17,16 @@ jobs:
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y ansible rsync openssh-client
+          sudo apt-get install -y rsync openssh-client
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install Ansible (compatible with Python 3.8)
+        run: |
+          pip install ansible-core==2.15.11
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3

@@ -20,8 +20,20 @@ jobs:
       - name: Prepare SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/warehouse_mlops_new_id_rsa
+          # Decode base64 private key
+          echo "${{ secrets.SSH_PRIVATE_KEY_BASE64 }}" | base64 -d > ~/.ssh/warehouse_mlops_new_id_rsa
           chmod 600 ~/.ssh/warehouse_mlops_new_id_rsa
+          
+          # Create SSH config
+          cat > ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            IdentityFile ~/.ssh/warehouse_mlops_new_id_rsa
+            IdentitiesOnly yes
+            LogLevel ERROR
+          EOF
+          chmod 600 ~/.ssh/config
 
       - name: Terraform tfvars
         run: |

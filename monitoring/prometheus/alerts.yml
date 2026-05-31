@@ -1,0 +1,20 @@
+groups:
+  - name: warehouse_api_alerts
+    rules:
+      - alert: HighBatchPredictionErrors
+        expr: increase(prediction_request_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Обнаружены ошибки batch prediction"
+          description: "За последние 5 минут API вернул ошибки при обработке батчей CSV."
+
+      - alert: IncidentEventsDetected
+        expr: increase(incident_events_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Обнаружены incident events"
+          description: "За последние 5 минут система записала инциденты."

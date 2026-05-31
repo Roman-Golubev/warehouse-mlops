@@ -1,0 +1,5 @@
+{
+  "active_color": "blue",
+  "model_path": "artifacts/models/model_blue.pkl",
+  "version": "bootstrap"
+}

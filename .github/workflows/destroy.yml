@@ -1,0 +1,44 @@
+name: destroy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+
+    env:
+      TF_DIR: infra/terraform/environments/dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/warehouse_mlops_new_id_rsa
+          chmod 600 ~/.ssh/warehouse_mlops_new_id_rsa
+
+      - name: Terraform tfvars
+        run: |
+          cat > $TF_DIR/terraform.tfvars <<EOF
+          yc_token      = "${{ secrets.YC_TOKEN }}"
+          yc_cloud_id   = "${{ secrets.YC_CLOUD_ID }}"
+          yc_folder_id  = "${{ secrets.YC_FOLDER_ID }}"
+          zone          = "ru-central1-a"
+          ssh_public_key = "${{ secrets.SSH_PUBLIC_KEY }}"
+          EOF
+
+      - name: Terraform Init
+        run: |
+          cd $TF_DIR
+          terraform init
+
+      - name: Terraform Destroy
+        run: |
+          cd $TF_DIR
+          terraform destroy -auto-approve

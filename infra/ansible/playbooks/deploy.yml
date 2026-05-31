@@ -1,0 +1,256 @@
+---
+- name: Deploy Warehouse MLOps System
+  hosts: all
+  become: true
+  vars:
+    project_dir: /opt/warehouse-mlops
+    reset_state: true
+
+  tasks:
+    - name: Ensure project directory exists
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy project to VM
+      synchronize:
+        src: "{{ playbook_dir }}/../../.."
+        dest: "{{ project_dir }}"
+        delete: yes
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.github"
+          - "--exclude=.env"
+          - "--exclude=*.pyc"
+          - "--exclude=__pycache__"
+          - "--exclude=.terraform"
+          - "--exclude=terraform.tfstate"
+          - "--exclude=terraform.tfstate.backup"
+          - "--exclude=.terraform.tfstate.lock.info"
+          - "--exclude=airflow_home"
+          - "--exclude=postgres_data"
+          - "--exclude=minio_data"
+          - "--exclude=grafana_data"
+
+    - name: Validate docker-compose configuration
+      shell: |
+        cd {{ project_dir }}
+        docker-compose config
+      register: compose_config_check
+      changed_when: false
+
+    - name: Stop existing containers and remove state for clean deployment
+      shell: |
+        cd {{ project_dir }}
+        docker-compose down -v --remove-orphans || true
+      when: reset_state | bool
+      changed_when: true
+
+    - name: Stop existing containers without removing volumes
+      shell: |
+        cd {{ project_dir }}
+        docker-compose down --remove-orphans || true
+      when: not (reset_state | bool)
+      changed_when: true
+
+    - name: Start docker-compose services
+      shell: |
+        cd {{ project_dir }}
+        docker-compose up -d --build
+      register: compose_up_result
+      changed_when: true
+
+    - name: Wait for containers to stabilize
+      pause:
+        seconds: 15
+
+    - name: Show docker-compose status after start
+      shell: |
+        cd {{ project_dir }}
+        docker-compose ps
+      register: compose_ps_after_start
+      changed_when: false
+
+    - name: Print docker-compose status after start
+      debug:
+        var: compose_ps_after_start.stdout_lines
+
+    - name: Wait for PostgreSQL to be ready
+      shell: |
+        cd {{ project_dir }}
+        docker-compose exec -T postgresql pg_isready -U airflow
+      register: postgres_ready
+      until: postgres_ready.rc == 0
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: Wait for MLflow endpoint on VM
+      uri:
+        url: http://127.0.0.1:5000/
+        method: GET
+        timeout: 10
+        status_code: [200, 302, 403]
+      register: mlflow_http_check
+      until: mlflow_http_check.status in [200, 302, 403]
+      retries: 30
+      delay: 10
+
+    - name: Show MLflow status code
+      debug:
+        msg: "MLflow endpoint returned HTTP {{ mlflow_http_check.status }}"
+
+    - name: Wait for Airflow init container to finish successfully
+      shell: |
+        cd {{ project_dir }}
+        docker inspect -f '{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}.State.ExitCode{{ '}}' }}' airflow_init
+      register: airflow_init_status
+      until: airflow_init_status.stdout is search("exited 0")
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+
+    - name: Show airflow-init logs
+      shell: |
+        cd {{ project_dir }}
+        docker-compose logs --tail=200 airflow-init
+      register: airflow_init_logs
+      changed_when: false
+
+    - name: Print airflow-init logs
+      debug:
+        var: airflow_init_logs.stdout_lines
+
+    - name: Fail if airflow-init did not finish successfully
+      fail:
+        msg: |
+          airflow-init container did not finish successfully.
+          Current status: {{ airflow_init_status.stdout | default('unknown') }}
+          Check airflow-init logs above.
+      when: airflow_init_status.stdout is not search("exited 0")
+
+    - name: Check Airflow initialization marker in volume
+      shell: |
+        docker run --rm -v airflow_home:/opt/airflow alpine sh -c 'test -f /opt/airflow/airflow_initialized && echo OK || echo MISSING'
+      register: airflow_marker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Show Airflow marker check result
+      debug:
+        msg: "Airflow marker check: {{ airflow_marker_check.stdout.strip() }}"
+
+    - name: Fail if Airflow initialization marker is missing
+      fail:
+        msg: |
+          Airflow initialization marker /opt/airflow/airflow_initialized not found in volume airflow_home.
+          airflow-init likely failed.
+          Check logs above for migration errors.
+      when: airflow_marker_check.stdout.strip() != "OK"
+
+    - name: Wait for Airflow webserver container to be running
+      shell: |
+        cd {{ project_dir }}
+        docker-compose ps airflow-webserver
+      register: airflow_web_status
+      changed_when: false
+      until: "'Up' in airflow_web_status.stdout"
+      retries: 30
+      delay: 10
+
+    - name: Wait for Airflow scheduler container to be running
+      shell: |
+        cd {{ project_dir }}
+        docker-compose ps airflow-scheduler
+      register: airflow_scheduler_status
+      changed_when: false
+      until: "'Up' in airflow_scheduler_status.stdout"
+      retries: 30
+      delay: 10
+
+    - name: Wait for API health endpoint
+      uri:
+        url: http://127.0.0.1/health
+        method: GET
+        status_code: 200
+        return_content: yes
+        timeout: 10
+      register: api_health
+      until: api_health.status == 200
+      retries: 30
+      delay: 10
+
+    - name: Verify API container is running
+      shell: |
+        cd {{ project_dir }}
+        docker-compose ps api
+      register: api_status
+      changed_when: false
+      failed_when: "'Up' not in api_status.stdout"
+
+    - name: Generate test CSV files for bootstrap
+      shell: |
+        cd {{ project_dir }}
+        docker-compose exec -T api python scripts/generate_test_csv.py
+      register: generate_csv_result
+      retries: 3
+      delay: 5
+      until: generate_csv_result.rc == 0
+      changed_when: generate_csv_result.rc == 0
+
+    - name: Run bootstrap model inside api container
+      shell: |
+        cd {{ project_dir }}
+        docker-compose exec -T \
+          -e MLFLOW_TRACKING_URI=http://mlflow:5000 \
+          -e S3_ENDPOINT_URL=http://minio:9000 \
+          -e AWS_ACCESS_KEY_ID=minioadmin \
+          -e AWS_SECRET_ACCESS_KEY=minioadmin \
+          api python scripts/bootstrap_model.py
+      register: bootstrap_result
+      until: bootstrap_result.rc == 0
+      retries: 5
+      delay: 30
+      changed_when: bootstrap_result.rc == 0
+
+    - name: Show bootstrap output
+      debug:
+        var: bootstrap_result.stdout_lines
+      when: bootstrap_result.stdout_lines is defined
+
+    - name: Final docker-compose status
+      shell: |
+        cd {{ project_dir }}
+        docker-compose ps
+      register: compose_ps_final
+      changed_when: false
+
+    - name: Print final docker-compose status
+      debug:
+        var: compose_ps_final.stdout_lines
+
+    - name: Deployment summary
+      debug:
+        msg: |
+          ==================== DEPLOYMENT SUMMARY ====================
+          PostgreSQL:        {{ 'OK' if postgres_ready.rc == 0 else 'FAIL' }}
+          MLflow:            HTTP {{ mlflow_http_check.status }}
+          Airflow Init:      {{ 'OK' if airflow_marker_check.stdout.strip() == 'OK' else 'FAIL' }}
+          Airflow Webserver: {{ 'OK' if 'Up' in airflow_web_status.stdout else 'FAIL' }}
+          Airflow Scheduler: {{ 'OK' if 'Up' in airflow_scheduler_status.stdout else 'FAIL' }}
+          API Health:        {{ 'OK' if api_health.status == 200 else 'FAIL' }}
+
+          Access URLs:
+          - API:         http://{{ ansible_default_ipv4.address | default(ansible_host) }}/
+          - MLflow:      http://{{ ansible_default_ipv4.address | default(ansible_host) }}:5000/
+          - Airflow:     http://{{ ansible_default_ipv4.address | default(ansible_host) }}:8080/
+          - MinIO:       http://{{ ansible_default_ipv4.address | default(ansible_host) }}:9001/
+          - Grafana:     http://{{ ansible_default_ipv4.address | default(ansible_host) }}:3000/
+          - Prometheus:  http://{{ ansible_default_ipv4.address | default(ansible_host) }}:9090/
+
+          Default credentials:
+          - MinIO:   minioadmin / minioadmin
+          - Grafana: admin / admin
+          ============================================================

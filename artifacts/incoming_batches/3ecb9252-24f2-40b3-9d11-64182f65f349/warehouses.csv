@@ -1,0 +1,6 @@
+warehouse_id,city,capacity,region_demand_factor
+1,Yekaterinburg,14091,1.248
+2,Moscow,18570,1.077
+3,Moscow,12892,1.136
+4,Saint_Petersburg,7971,1.13
+5,Yekaterinburg,23257,1.184

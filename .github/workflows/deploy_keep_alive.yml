@@ -1,0 +1,108 @@
+name: deploy_keep_alive
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy-keep-alive:
+    runs-on: ubuntu-latest
+
+    env:
+      TF_DIR: infra/terraform/environments/dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible rsync openssh-client curl
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/warehouse_mlops_new_id_rsa
+          chmod 600 ~/.ssh/warehouse_mlops_new_id_rsa
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/warehouse_mlops_new_id_rsa.pub
+          chmod 644 ~/.ssh/warehouse_mlops_new_id_rsa.pub
+
+      - name: Terraform tfvars
+        run: |
+          cat > $TF_DIR/terraform.tfvars <<EOF
+          yc_token      = "${{ secrets.YC_TOKEN }}"
+          yc_cloud_id   = "${{ secrets.YC_CLOUD_ID }}"
+          yc_folder_id  = "${{ secrets.YC_FOLDER_ID }}"
+          zone          = "ru-central1-a"
+          ssh_public_key = "${{ secrets.SSH_PUBLIC_KEY }}"
+          EOF
+
+      - name: Terraform Init
+        run: |
+          cd $TF_DIR
+          terraform init
+
+      - name: Terraform Apply
+        run: |
+          cd $TF_DIR
+          terraform apply -auto-approve
+
+      - name: Wait for SSH
+        run: |
+          IP=$(cd $TF_DIR && terraform output -raw vm_external_ip)
+          for i in {1..30}; do
+            if ssh -i ~/.ssh/warehouse_mlops_new_id_rsa -o StrictHostKeyChecking=no ubuntu@$IP 'echo ok'; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+
+      - name: Ansible Deploy
+        run: |
+          ansible-playbook -i infra/ansible/inventory/production/hosts.ini infra/ansible/playbooks/deploy.yml
+
+      - name: Generate test CSV files
+        run: |
+          python scripts/generate_test_csv.py
+
+      - name: Show service URLs
+        run: |
+          IP=$(cd $TF_DIR && terraform output -raw vm_external_ip)
+          echo "VM_IP=$IP" >> $GITHUB_ENV
+          echo "API: http://$IP/health"
+          echo "Grafana: http://$IP:3000"
+          echo "Prometheus: http://$IP:9090"
+          echo "Airflow: http://$IP:8080"
+          echo "MLflow: http://$IP:5000"
+          echo "MinIO: http://$IP:9001"
+
+      - name: Wait for API health
+        run: |
+          for i in {1..30}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://$VM_IP/health || true)
+            if [ "$code" = "200" ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+
+      - name: Send test batch to API
+        env:
+          API_BASE_URL: http://${{ env.VM_IP }}
+        run: |
+          python scripts/send_test_batch.py

@@ -1,0 +1,16 @@
+- hosts: mlops
+  become: true
+  vars:
+    project_dir: /opt/warehouse-mlops
+  tasks:
+    - name: Stop containers
+      shell: |
+        cd {{ project_dir }}
+        docker-compose down -v || true
+      args:
+        executable: /bin/bash
+
+    - name: Remove project directory
+      file:
+        path: "{{ project_dir }}"
+        state: absent

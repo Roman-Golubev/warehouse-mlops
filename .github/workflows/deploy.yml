@@ -22,11 +22,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.8"
+          python-version: "3.11"
 
       - name: Install Ansible (compatible with Python 3.8)
         run: |
-          python -m pip install --upgrade pip
           pip install ansible-core==2.15.11
 
       - name: Setup Terraform

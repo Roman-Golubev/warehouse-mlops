@@ -24,9 +24,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Ansible (compatible with Python 3.8)
+      - name: Install Ansible and required collections
         run: |
           pip install ansible-core==2.15.11
+          ansible-galaxy collection install community.general
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -95,14 +96,14 @@ jobs:
           echo "SSH connection failed after 30 attempts"
           exit 1
 
-      - name: Copy project to VM (rsync)
+      - name: Create Ansible inventory
         run: |
-          IP="${{ steps.vm-ip.outputs.VM_IP }}"
-          DEST_DIR="/home/ubuntu/warehouse_mlops"
-          # Ensure destination directory exists
-          ssh -i ~/.ssh/warehouse_mlops_new_id_rsa -o StrictHostKeyChecking=no ubuntu@${IP} "mkdir -p ${DEST_DIR}"
-          # Sync full project (adjust excludes if needed)
-          rsync -avz -e "ssh -i ~/.ssh/warehouse_mlops_new_id_rsa -o StrictHostKeyChecking=no" --delete ./ ubuntu@${IP}:${DEST_DIR}
+          mkdir -p infra/ansible/inventory/production
+          cat > infra/ansible/inventory/production/hosts.ini <<EOF
+          [mlops]
+          ${{ steps.vm-ip.outputs.VM_IP }} ansible_user=ubuntu ansible_ssh_private_key_file=/home/runner/.ssh/warehouse_mlops_new_id_rsa
+          EOF
+          cat infra/ansible/inventory/production/hosts.ini
 
       - name: Ansible Deploy
         run: |

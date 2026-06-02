@@ -38,11 +38,3 @@ resource "yandex_compute_instance" "vm" {
     preemptible = true
   }
 }
-
-resource "local_file" "ansible_inventory" {
-  filename = "${path.root}/infra/ansible/inventory/production/hosts.ini"
-  content  = <<EOT
-[mlops]
-${yandex_compute_instance.vm.network_interface.0.nat_ip_address} ansible_user=ubuntu ansible_ssh_private_key_file=/home/runner/.ssh/warehouse_mlops_new_id_rsa
-EOT
-}
